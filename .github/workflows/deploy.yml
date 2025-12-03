@@ -1,11 +1,13 @@
-name: Deploy to cPanel via FTP
+name: FTP Deploy to Shared Hosting
 
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
+    name: Deploy to cPanel
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
@@ -78,6 +80,14 @@ jobs:
           chmod -R 775 deployment/storage/
           chmod -R 775 deployment/bootstrap/cache/
           
+          # Create .htaccess for root path (if not exists, it will be created)
+          if [ ! -f deployment/.htaccess ]; then
+            echo "RewriteEngine On" > deployment/.htaccess
+            echo "RewriteCond %{REQUEST_FILENAME} !-d" >> deployment/.htaccess
+            echo "RewriteCond %{REQUEST_FILENAME} !-f" >> deployment/.htaccess
+            echo "RewriteRule ^ public/index.php [L]" >> deployment/.htaccess
+          fi
+          
           # Create deployment info file
           echo "Deployed at: $(date)" > deployment/DEPLOYMENT_INFO.txt
           echo "Commit: ${{ github.sha }}" >> deployment/DEPLOYMENT_INFO.txt
@@ -86,16 +96,18 @@ jobs:
       - name: Try FTP Deployment
         id: ftp_deploy
         continue-on-error: true
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.6
         with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
           password: ${{ secrets.FTP_PASSWORD }}
           protocol: ${{ secrets.FTP_PROTOCOL || 'ftp' }}
           port: ${{ secrets.FTP_PORT || '21' }}
           timeout: 300000
           local-dir: ./deployment/
-          server-dir: ${{ secrets.FTP_SERVER_DIR }}
+          server-dir: ${{ secrets.FTP_REMOTE_DIR }}
+          dangerous-clean-slate: false
+          log-level: verbose
           exclude: |
             **/.git*
             **/.git*/**
@@ -118,34 +130,31 @@ jobs:
             **/postcss.config.js
             **/tailwind.config.js
             **/vite.config.js
-          dangerous-clean-slate: false
-          
-      - name: Try SFTP Deployment (Fallback)
-        id: sftp_deploy
+            
+      - name: Try lftp Deployment (Fallback)
+        id: lftp_deploy
         if: steps.ftp_deploy.outcome == 'failure'
         continue-on-error: true
         run: |
-          sudo apt-get update && sudo apt-get install -y openssh-client sshpass
-          if [ -n "${{ secrets.SFTP_HOST }}" ]; then
-            sshpass -p '${{ secrets.SFTP_PASSWORD }}' rsync -avz --delete \
-              -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${{ secrets.SFTP_PORT || '22' }}" \
-              --exclude='.git*' \
-              --exclude='node_modules/**' \
-              --exclude='.env*' \
-              --exclude='tests/**' \
-              --exclude='phpunit.xml' \
-              --exclude='README.md' \
-              --exclude='.github/**' \
-              ./deployment/ ${{ secrets.SFTP_USERNAME }}@${{ secrets.SFTP_HOST }}:${{ secrets.FTP_SERVER_DIR }}/
-          else
-            echo "SFTP not configured, skipping..."
-            exit 1
-          fi
+          sudo apt-get update && sudo apt-get install -y lftp
+          lftp -c "
+            set ftp:passive-mode true;
+            set ftp:use-feat false;
+            set ftp:ssl-allow no;
+            set net:timeout 60;
+            set net:max-retries 5;
+            set net:reconnect-interval-base 10;
+            set net:reconnect-interval-multiplier 1;
+            open -p ${{ secrets.FTP_PORT || '21' }} -u '${{ secrets.FTP_USER }}','${{ secrets.FTP_PASSWORD }}' ${{ secrets.FTP_HOST }};
+            cd ${{ secrets.FTP_REMOTE_DIR }};
+            mirror --reverse --delete --verbose --exclude-glob='.git*' --exclude-glob='node_modules/**' --exclude-glob='.env*' --exclude-glob='tests/**' --exclude-glob='phpunit.xml' --exclude-glob='README.md' --exclude-glob='.github/**' ./deployment/ .;
+            quit;
+          "
           
       - name: Check deployment status
-        if: steps.ftp_deploy.outcome == 'failure' && (steps.sftp_deploy.outcome == 'failure' || steps.sftp_deploy.outcome == 'skipped')
+        if: steps.ftp_deploy.outcome == 'failure' && (steps.lftp_deploy.outcome == 'failure' || steps.lftp_deploy.outcome == 'skipped')
         run: |
-          echo "❌ Both FTP and SFTP deployments failed!"
+          echo "❌ Both FTP and lftp deployments failed!"
           echo "This is likely due to:"
           echo "1. Firewall blocking GitHub Actions IP addresses"
           echo "2. FTP server not allowing connections from external IPs"
@@ -163,6 +172,7 @@ jobs:
           rm -rf deployment/
           
       - name: Deployment notification
+        if: steps.ftp_deploy.outcome == 'success' || steps.lftp_deploy.outcome == 'success'
         run: |
           echo "🚀 Deployment completed successfully!"
           echo "Commit: ${{ github.sha }}"

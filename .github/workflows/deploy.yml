@@ -84,6 +84,8 @@ jobs:
           server: ${{ secrets.FTP_HOST }}
           username: ${{ secrets.FTP_USER }}
           password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ${{ secrets.FTP_PROTOCOL || 'ftps' }}
+          port: ${{ secrets.FTP_PORT || '21' }}
           local-dir: ./deploy_temp/
           server-dir: ${{ secrets.FTP_REMOTE_DIR }}/
           dangerous-clean-slate: false

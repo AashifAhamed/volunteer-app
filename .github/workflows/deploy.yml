@@ -83,9 +83,10 @@ jobs:
         id: sftp_deploy
         continue-on-error: true
         run: |
-          sudo apt-get update && sudo apt-get install -y openssh-client
+          sudo apt-get update && sudo apt-get install -y openssh-client sshpass
           if [ -n "${{ secrets.SFTP_HOST }}" ]; then
             sshpass -p '${{ secrets.SFTP_PASSWORD }}' rsync -avz --delete \
+              -e "ssh -o StrictHostKeyChecking=no" \
               --exclude='.git*' \
               --exclude='node_modules/**' \
               --exclude='.env*' \

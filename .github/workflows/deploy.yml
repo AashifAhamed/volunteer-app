@@ -2,12 +2,10 @@ name: Deploy to cPanel via FTP
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   deploy:
-    name: Deploy to cPanel
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
@@ -20,6 +18,7 @@ jobs:
         with:
           php-version: '8.1'
           extensions: mbstring, xml, bcmath, pdo, pdo_mysql
+          coverage: none
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -27,103 +26,102 @@ jobs:
           node-version: '20'
           cache: 'npm'
           
-      - name: Install Composer Dependencies
+      - name: Install Composer dependencies
         run: |
           composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs
           
-      - name: Install NPM Dependencies
+      - name: Install NPM dependencies
         run: |
           npm ci
           
-      - name: Build Assets
+      - name: Build assets
         run: |
           npm run build
           
       - name: Create deployment package
         run: |
-          # Create a temporary directory for deployment
-          mkdir -p deploy_temp
+          # Create a clean deployment directory
+          mkdir -p deployment
           
-          # Copy all files except excluded ones
-          rsync -av --progress \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='node_modules' \
-            --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='.gitignore' \
-            --exclude='.gitattributes' \
-            --exclude='.phpunit.cache' \
-            --exclude='.phpunit.result.cache' \
-            --exclude='Homestead.json' \
-            --exclude='Homestead.yaml' \
-            --exclude='auth.json' \
-            --exclude='npm-debug.log' \
-            --exclude='yarn-error.log' \
-            --exclude='.fleet' \
-            --exclude='.idea' \
-            --exclude='.vscode' \
-            --exclude='storage/logs/*' \
-            --exclude='storage/framework/cache/*' \
-            --exclude='storage/framework/sessions/*' \
-            --exclude='storage/framework/views/*' \
-            --exclude='tests' \
-            --exclude='phpunit.xml' \
-            --exclude='README.md' \
-            --exclude='postcss.config.js' \
-            --exclude='tailwind.config.js' \
-            --exclude='vite.config.js' \
-            --exclude='package.json' \
-            --exclude='package-lock.json' \
-            --exclude='composer.json' \
-            --exclude='composer.lock' \
-            ./ deploy_temp/
+          # Copy application files (excluding development files)
+          rsync -av --exclude='.git*' \
+                    --exclude='node_modules' \
+                    --exclude='tests' \
+                    --exclude='.github' \
+                    --exclude='storage/logs/*' \
+                    --exclude='storage/framework/cache/*' \
+                    --exclude='storage/framework/sessions/*' \
+                    --exclude='storage/framework/views/*' \
+                    --exclude='storage/app/public/*' \
+                    --exclude='.env.example' \
+                    --exclude='composer.lock' \
+                    --exclude='package-lock.json' \
+                    --exclude='phpunit.xml' \
+                    --exclude='README.md' \
+                    --exclude='.editorconfig' \
+                    --exclude='.gitattributes' \
+                    --exclude='.gitignore' \
+                    --exclude='postcss.config.js' \
+                    --exclude='tailwind.config.js' \
+                    --exclude='vite.config.js' \
+                    ./ deployment/
           
-      - name: Try SFTP Deployment (if available)
-        id: sftp_deploy
-        continue-on-error: true
-        run: |
-          sudo apt-get update && sudo apt-get install -y openssh-client sshpass
-          if [ -n "${{ secrets.SFTP_HOST }}" ]; then
-            sshpass -p '${{ secrets.SFTP_PASSWORD }}' rsync -avz --delete \
-              -e "ssh -o StrictHostKeyChecking=no" \
-              --exclude='.git*' \
-              --exclude='node_modules/**' \
-              --exclude='.env*' \
-              --exclude='tests/**' \
-              --exclude='phpunit.xml' \
-              --exclude='README.md' \
-              --exclude='.github/**' \
-              ./deploy_temp/ ${{ secrets.SFTP_USER }}@${{ secrets.SFTP_HOST }}:${{ secrets.FTP_REMOTE_DIR }}/
-            echo "sftp_success=true" >> $GITHUB_OUTPUT
-          else
-            echo "sftp_success=false" >> $GITHUB_OUTPUT
-          fi
+          # Create necessary directories
+          mkdir -p deployment/storage/logs
+          mkdir -p deployment/storage/framework/cache
+          mkdir -p deployment/storage/framework/sessions
+          mkdir -p deployment/storage/framework/views
+          mkdir -p deployment/storage/app/public
           
-      - name: Deploy to FTP using lftp (fallback)
-        if: steps.sftp_deploy.outputs.sftp_success != 'true'
-        run: |
-          sudo apt-get update && sudo apt-get install -y lftp
-          echo "Attempting FTP connection to ${{ secrets.FTP_HOST }}:${{ secrets.FTP_PORT || '21' }}"
-          lftp -c "
-            set ftp:passive-mode true;
-            set ftp:use-feat false;
-            set ftp:ssl-allow no;
-            set net:timeout 120;
-            set net:max-retries 3;
-            set net:reconnect-interval-base 15;
-            set net:reconnect-interval-multiplier 2;
-            set dns:max-retries 3;
-            set dns:timeout 30;
-            set cmd:fail-exit yes;
-            open -p ${{ secrets.FTP_PORT || '21' }} -u '${{ secrets.FTP_USER }}','${{ secrets.FTP_PASSWORD }}' ${{ secrets.FTP_HOST }};
-            cd ${{ secrets.FTP_REMOTE_DIR }};
-            mirror --reverse --delete --verbose --parallel=3 --exclude-glob='.git*' --exclude-glob='node_modules/**' --exclude-glob='.env*' --exclude-glob='tests/**' --exclude-glob='phpunit.xml' --exclude-glob='README.md' --exclude-glob='.github/**' --exclude-glob='deploy_temp/**' ./deploy_temp/ .;
-            quit;
-          " || (echo "FTP deployment failed. This might be due to:" && echo "1. Firewall blocking GitHub Actions IPs" && echo "2. FTP server not allowing passive mode connections" && echo "3. Incorrect FTP credentials or host" && exit 1)
-            
-      - name: Cleanup
+          # Set proper permissions (for local, actual permissions set on server)
+          chmod -R 755 deployment/
+          chmod -R 775 deployment/storage/
+          chmod -R 775 deployment/bootstrap/cache/
+          
+          # Create deployment info file
+          echo "Deployed at: $(date)" > deployment/DEPLOYMENT_INFO.txt
+          echo "Commit: ${{ github.sha }}" >> deployment/DEPLOYMENT_INFO.txt
+          echo "Branch: ${{ github.ref_name }}" >> deployment/DEPLOYMENT_INFO.txt
+          
+      - name: Deploy to FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./deployment/
+          server-dir: ${{ secrets.FTP_SERVER_DIR }}
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/tests/**
+            **/.github/**
+            **/storage/logs/*
+            **/storage/framework/cache/*
+            **/storage/framework/sessions/*
+            **/storage/framework/views/*
+            **/storage/app/public/*
+            **/.env.example
+            **/composer.lock
+            **/package-lock.json
+            **/phpunit.xml
+            **/README.md
+            **/.editorconfig
+            **/.gitattributes
+            **/.gitignore
+            **/postcss.config.js
+            **/tailwind.config.js
+            **/vite.config.js
+          dangerous-clean-slate: false
+          
+      - name: Post-deployment cleanup
         if: always()
         run: |
-          rm -rf deploy_temp
-
+          rm -rf deployment/
+          
+      - name: Deployment notification
+        run: |
+          echo "🚀 Deployment completed successfully!"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"

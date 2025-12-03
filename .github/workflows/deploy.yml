@@ -83,12 +83,17 @@ jobs:
           echo "Commit: ${{ github.sha }}" >> deployment/DEPLOYMENT_INFO.txt
           echo "Branch: ${{ github.ref_name }}" >> deployment/DEPLOYMENT_INFO.txt
           
-      - name: Deploy to FTP
+      - name: Try FTP Deployment
+        id: ftp_deploy
+        continue-on-error: true
         uses: SamKirkland/FTP-Deploy-Action@v4.3.4
         with:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ${{ secrets.FTP_PROTOCOL || 'ftp' }}
+          port: ${{ secrets.FTP_PORT || '21' }}
+          timeout: 300000
           local-dir: ./deployment/
           server-dir: ${{ secrets.FTP_SERVER_DIR }}
           exclude: |
@@ -114,6 +119,43 @@ jobs:
             **/tailwind.config.js
             **/vite.config.js
           dangerous-clean-slate: false
+          
+      - name: Try SFTP Deployment (Fallback)
+        id: sftp_deploy
+        if: steps.ftp_deploy.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssh-client sshpass
+          if [ -n "${{ secrets.SFTP_HOST }}" ]; then
+            sshpass -p '${{ secrets.SFTP_PASSWORD }}' rsync -avz --delete \
+              -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${{ secrets.SFTP_PORT || '22' }}" \
+              --exclude='.git*' \
+              --exclude='node_modules/**' \
+              --exclude='.env*' \
+              --exclude='tests/**' \
+              --exclude='phpunit.xml' \
+              --exclude='README.md' \
+              --exclude='.github/**' \
+              ./deployment/ ${{ secrets.SFTP_USERNAME }}@${{ secrets.SFTP_HOST }}:${{ secrets.FTP_SERVER_DIR }}/
+          else
+            echo "SFTP not configured, skipping..."
+            exit 1
+          fi
+          
+      - name: Check deployment status
+        if: steps.ftp_deploy.outcome == 'failure' && (steps.sftp_deploy.outcome == 'failure' || steps.sftp_deploy.outcome == 'skipped')
+        run: |
+          echo "❌ Both FTP and SFTP deployments failed!"
+          echo "This is likely due to:"
+          echo "1. Firewall blocking GitHub Actions IP addresses"
+          echo "2. FTP server not allowing connections from external IPs"
+          echo "3. Incorrect FTP credentials or server settings"
+          echo ""
+          echo "Solutions:"
+          echo "- Contact your hosting provider to whitelist GitHub Actions IP ranges"
+          echo "- Verify FTP credentials are correct"
+          echo "- Check if your server supports SFTP and configure SFTP secrets"
+          exit 1
           
       - name: Post-deployment cleanup
         if: always()

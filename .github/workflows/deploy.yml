@@ -79,22 +79,47 @@ jobs:
             --exclude='composer.lock' \
             ./ deploy_temp/
           
-      - name: Deploy to FTP using lftp
+      - name: Try SFTP Deployment (if available)
+        id: sftp_deploy
+        continue-on-error: true
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssh-client
+          if [ -n "${{ secrets.SFTP_HOST }}" ]; then
+            sshpass -p '${{ secrets.SFTP_PASSWORD }}' rsync -avz --delete \
+              --exclude='.git*' \
+              --exclude='node_modules/**' \
+              --exclude='.env*' \
+              --exclude='tests/**' \
+              --exclude='phpunit.xml' \
+              --exclude='README.md' \
+              --exclude='.github/**' \
+              ./deploy_temp/ ${{ secrets.SFTP_USER }}@${{ secrets.SFTP_HOST }}:${{ secrets.FTP_REMOTE_DIR }}/
+            echo "sftp_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "sftp_success=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Deploy to FTP using lftp (fallback)
+        if: steps.sftp_deploy.outputs.sftp_success != 'true'
         run: |
           sudo apt-get update && sudo apt-get install -y lftp
+          echo "Attempting FTP connection to ${{ secrets.FTP_HOST }}:${{ secrets.FTP_PORT || '21' }}"
           lftp -c "
             set ftp:passive-mode true;
             set ftp:use-feat false;
             set ftp:ssl-allow no;
-            set net:timeout 60;
-            set net:max-retries 5;
-            set net:reconnect-interval-base 10;
-            set net:reconnect-interval-multiplier 1;
+            set net:timeout 120;
+            set net:max-retries 3;
+            set net:reconnect-interval-base 15;
+            set net:reconnect-interval-multiplier 2;
+            set dns:max-retries 3;
+            set dns:timeout 30;
+            set cmd:fail-exit yes;
             open -p ${{ secrets.FTP_PORT || '21' }} -u '${{ secrets.FTP_USER }}','${{ secrets.FTP_PASSWORD }}' ${{ secrets.FTP_HOST }};
             cd ${{ secrets.FTP_REMOTE_DIR }};
-            mirror --reverse --delete --verbose --exclude-glob='.git*' --exclude-glob='node_modules/**' --exclude-glob='.env*' --exclude-glob='tests/**' --exclude-glob='phpunit.xml' --exclude-glob='README.md' --exclude-glob='.github/**' --exclude-glob='deploy_temp/**' ./deploy_temp/ .;
+            mirror --reverse --delete --verbose --parallel=3 --exclude-glob='.git*' --exclude-glob='node_modules/**' --exclude-glob='.env*' --exclude-glob='tests/**' --exclude-glob='phpunit.xml' --exclude-glob='README.md' --exclude-glob='.github/**' --exclude-glob='deploy_temp/**' ./deploy_temp/ .;
             quit;
-          "
+          " || (echo "FTP deployment failed. This might be due to:" && echo "1. Firewall blocking GitHub Actions IPs" && echo "2. FTP server not allowing passive mode connections" && echo "3. Incorrect FTP credentials or host" && exit 1)
             
       - name: Cleanup
         if: always()

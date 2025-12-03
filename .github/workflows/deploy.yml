@@ -1,0 +1,105 @@
+name: Deploy to cPanel via FTP
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to cPanel
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: mbstring, xml, bcmath, pdo, pdo_mysql
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          
+      - name: Install Composer Dependencies
+        run: |
+          composer install --no-dev --optimize-autoloader --no-interaction
+          
+      - name: Install NPM Dependencies
+        run: |
+          npm ci
+          
+      - name: Build Assets
+        run: |
+          npm run build
+          
+      - name: Create deployment package
+        run: |
+          # Create a temporary directory for deployment
+          mkdir -p deploy_temp
+          
+          # Copy all files except excluded ones
+          rsync -av --progress \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='.gitignore' \
+            --exclude='.gitattributes' \
+            --exclude='.phpunit.cache' \
+            --exclude='.phpunit.result.cache' \
+            --exclude='Homestead.json' \
+            --exclude='Homestead.yaml' \
+            --exclude='auth.json' \
+            --exclude='npm-debug.log' \
+            --exclude='yarn-error.log' \
+            --exclude='.fleet' \
+            --exclude='.idea' \
+            --exclude='.vscode' \
+            --exclude='storage/logs/*' \
+            --exclude='storage/framework/cache/*' \
+            --exclude='storage/framework/sessions/*' \
+            --exclude='storage/framework/views/*' \
+            --exclude='tests' \
+            --exclude='phpunit.xml' \
+            --exclude='README.md' \
+            --exclude='postcss.config.js' \
+            --exclude='tailwind.config.js' \
+            --exclude='vite.config.js' \
+            --exclude='package.json' \
+            --exclude='package-lock.json' \
+            --exclude='composer.json' \
+            --exclude='composer.lock' \
+            ./ deploy_temp/
+          
+      - name: Deploy to FTP
+        uses: SamKirkland/FTP-Deploy-Action@4.3.4
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./deploy_temp/
+          server-dir: ${{ secrets.FTP_REMOTE_DIR }}/
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/.env
+            **/.env.*
+            **/tests/**
+            **/phpunit.xml
+            **/README.md
+            **/.github/**
+            
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf deploy_temp
+

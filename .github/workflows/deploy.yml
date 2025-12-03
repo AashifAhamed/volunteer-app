@@ -79,29 +79,22 @@ jobs:
             --exclude='composer.lock' \
             ./ deploy_temp/
           
-      - name: Deploy to FTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.6
-        with:
-          server: ${{ secrets.FTP_HOST }}
-          username: ${{ secrets.FTP_USER }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ${{ secrets.FTP_PROTOCOL || 'ftp' }}
-          port: ${{ secrets.FTP_PORT || '21' }}
-          timeout: 300000
-          local-dir: ./deploy_temp/
-          server-dir: ${{ secrets.FTP_REMOTE_DIR }}
-          dangerous-clean-slate: false
-          log-level: verbose
-          exclude: |
-            **/.git*
-            **/.git*/**
-            **/node_modules/**
-            **/.env
-            **/.env.*
-            **/tests/**
-            **/phpunit.xml
-            **/README.md
-            **/.github/**
+      - name: Deploy to FTP using lftp
+        run: |
+          sudo apt-get update && sudo apt-get install -y lftp
+          lftp -c "
+            set ftp:passive-mode true;
+            set ftp:use-feat false;
+            set ftp:ssl-allow no;
+            set net:timeout 60;
+            set net:max-retries 5;
+            set net:reconnect-interval-base 10;
+            set net:reconnect-interval-multiplier 1;
+            open -p ${{ secrets.FTP_PORT || '21' }} -u '${{ secrets.FTP_USER }}','${{ secrets.FTP_PASSWORD }}' ${{ secrets.FTP_HOST }};
+            cd ${{ secrets.FTP_REMOTE_DIR }};
+            mirror --reverse --delete --verbose --exclude-glob='.git*' --exclude-glob='node_modules/**' --exclude-glob='.env*' --exclude-glob='tests/**' --exclude-glob='phpunit.xml' --exclude-glob='README.md' --exclude-glob='.github/**' --exclude-glob='deploy_temp/**' ./deploy_temp/ .;
+            quit;
+          "
             
       - name: Cleanup
         if: always()
